@@ -1,4 +1,4 @@
-# Assignments 3 & 4: OmniPaxos
+# OmniPaxos
 
 ## Due Dates
 - OmniPaxos A: **Fri 10 Oct.** Late: 17 Oct.
