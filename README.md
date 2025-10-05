@@ -1,9 +1,5 @@
 # OmniPaxos
 
-## Due Dates
-- OmniPaxos A: **Fri 10 Oct.** Late: 17 Oct.
-- OmniPaxos B: **Fri 31 Oct.** Late: 7 Nov.
-
 ## Introduction
 
 In this series of assignments you'll implement OmniPaxos, a replicated state machine protocol. A replicated service achieves fault tolerance by storing complete copies of its state (i.e., data) on multiple replica servers. Replication allows the service to continue operating even if some of its servers experience failures (crashes or a broken or flaky network). The challenge is that failures may cause the replicas to hold differing copies of the data.
