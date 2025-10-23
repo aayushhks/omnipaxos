@@ -57,11 +57,9 @@ A service calls `Make(peers,me,…)` to create a OmniPaxos peer. The peers argum
 
 `omnipaxos.go` contains example code that sends an RPC (`sendHeartBeats()`) and that handles an incoming RPC (`HBRequest()`). Your OmniPaxos peers should exchange RPCs using the labrpc Go package (source in `labrpc`). The Tester can tell `labrpc` to delay RPCs, re-order them, and discard them to simulate various network failures. While you can temporarily modify `labrpc`, make sure your OmniPaxos works with the original `labrpc`, since that's what we'll use to test and grade your assignment. Your OmniPaxos instances must interact only with RPC; for example, they are not allowed to communicate using shared Go variables or files.
 
-## A3: Ballot Leader Election
+## Ballot Leader Election
 
-### Task
-
-Implement OmniPaxos ballot leader election and heartbeats. The goal for A3 is for a single leader to be elected, for the leader to remain the leader if there are no failures, and for a new leader to take over if the old leader fails or if packets to/from the old leader are lost. Run `go test -run 3 -race` to test your A3 code.
+Implementing OmniPaxos ballot leader election and heartbeats. The goal for A3 is for a single leader to be elected, for the leader to remain the leader if there are no failures, and for a new leader to take over if the old leader fails or if packets to/from the old leader are lost. Run `go test -run 3 -race` to test your A3 code.
 
 ### Hints
 
@@ -146,11 +144,9 @@ ok  	a3-omnipaxos	39.583s
 
 Each "Passed" line contains five numbers; these are the time that the test took in seconds, the number of OmniPaxos peers (usually 3 or 5), the number of RPCs sent during the test, the total number of bytes in the RPC messages, and the number of log entries that OmniPaxos reports were committed. Your numbers will differ from those shown here. You can ignore the numbers if you like, but they may help you sanity-check the number of RPCs that your implementation sends. For all of the parts the grading script will fail your solution if it takes more than 600 seconds for all of the tests (`go test`), or if any individual test takes more than 120 seconds.
 
-## A4: Log Replication
+## Log Replication
 
-### Task
-
-Implement the log entries, so that the `go test -run 4 -race` tests pass.
+Implementing the log entries, so that the `go test -run 4 -race` tests pass.
 For this, you need to implement everything remaining in Figure 3.
 
 ### Recovery (Important)
@@ -198,7 +194,7 @@ Using this design, you don't need a separate `12. <Reconnected>` implementation.
 Make sure you implement the Recovery Mechanism in order to pass all the tests.
 
 
-### Hints
+### Findings
 - All log entires are 0-indexed.
 - This part involves multiple RPCs which once again, don't need replies. You may use the same `DummyReply` struct for all such RPC replies.
 - Your first goal should be to pass `TestBasicAgree4()`. Start by implementing `Proposal()`, then write the code to send and receive new log entries via `<Proposal> -> <Accept> -> <Accepted> -> <Decide>` RPCs, following Figure 3. 
@@ -242,7 +238,7 @@ go test -run 4  10.32s user 5.81s system 8% cpu 3:11.40 total
 
 The "ok OmniPaxos 94.833s" means that Go measured the time taken for the A4 tests to be 94.833 seconds of real (wall-clock) time. The "10.32s user" means that the code consumed 10.32s seconds of CPU time, or time spent actually executing instructions (rather than waiting or sleeping). If your solution uses an unreasonable amount of time, look for time spent sleeping or waiting for RPC timeouts, loops that run without sleeping or waiting for conditions or channel messages, or large numbers of RPCs sent.
 
-#### A few other hints:
+#### A few other findings:
 
 - Run git pull to get the latest lab software.
 - Failures may be caused by problems in your code for A3 or log replication. Your code should pass all the A3 and A4 tests. It might be possible that your changes for 4A break some tests for A3. So keep testing both parts as you work on this assignment.
