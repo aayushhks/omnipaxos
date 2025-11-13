@@ -208,8 +208,51 @@ func (op *OmniPaxos) GetState() (int, bool) {
 }
 
 func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
-	// To be implemented
-	return -1, -1, false
+	op.mu.Lock()
+	defer func() { op.mu.Unlock() }()
+
+	index := -1
+	ballot := -1
+	isLeader := (op.state.role == LEADER) && (op.os.L.Pid == op.me)
+	op.Debug("started Proposal: %+v, state: %+v", command, op.state)
+
+	if op.stopped() {
+		return index, ballot, isLeader
+	}
+
+	if op.state.role == LEADER && op.state.phase == PREPARE {
+		// P1. add to buffer if in prepare
+		op.buffer = append(op.buffer, command)
+		return len(op.os.Log) - 1, op.os.L.N, isLeader
+	} else if op.state.role == LEADER && op.state.phase == ACCEPT {
+		// A1. append to log and set accepted
+		op.os.Log = append(op.os.Log, command)
+		op.accepted[op.me] = len(op.os.Log)
+		op.persist()
+
+		// A2. send accept to all promised followers
+		var wg sync.WaitGroup
+		for _, p := range op.promises {
+			if p.f == op.me {
+				continue
+			}
+			wg.Add(1)
+			go func(f int, l int, n Ballot, C interface{}) {
+				defer wg.Done()
+				request := AcceptRequest{
+					L:   l,
+					N:   n,
+					Idx: len(op.os.Log),
+					C:   C,
+				}
+				op.peers[f].Call("OmniPaxos.AcceptHandler", &request, &DummyReply{})
+			}(p.f, op.me, op.currentRnd, command)
+		}
+		wg.Wait()
+		return len(op.os.Log) - 1, op.os.L.N, isLeader
+	}
+
+	return index, ballot, isLeader
 }
 
 func (op *OmniPaxos) Kill() {
@@ -420,17 +463,148 @@ func (op *OmniPaxos) PromiseHandler(req *PromiseRequest, reply *DummyReply) {
 						Sfx:     sfx,
 						SyncIdx: syncIdx,
 					}
-					// op.peers[f].Call("OmniPaxos.AcceptSyncHandler", &request, &DummyReply{}) // To be added
+					op.peers[f].Call("OmniPaxos.AcceptSyncHandler", &request, &DummyReply{})
 				}(op.me, n, op.suffix(syncIdx), syncIdx, p.f)
 			}
 
 		} else if op.state.phase == ACCEPT {
-			// Logic to be added
+
+			// A1. set syncIdx
+			var syncIdx int
+			if accRnd == op.maxProm.accRnd {
+				syncIdx = op.maxProm.logIdx
+			} else {
+				syncIdx = decIdx
+			}
+
+			// A2. send AcceptSync to follower
+			request := AcceptSyncRequest{
+				L:       op.me,
+				N:       n,
+				Sfx:     op.suffix(syncIdx),
+				SyncIdx: syncIdx,
+			}
+			op.peers[f].Call("OmniPaxos.AcceptSyncHandler", &request, &DummyReply{})
+
+			// A3. send decide to follower if they are behind
+			if op.os.DecidedIdx > decIdx {
+				request := DecideRequest{
+					L:      op.me,
+					N:      n,
+					DecIdx: op.os.DecidedIdx,
+				}
+				// op.peers[f].Call("OmniPaxos.DecideHandler", &request, &DummyReply{}) // To be added
+			}
 		}
 
 		op.persist()
 
 	}(req.F, req.N, req.AccRnd, req.LogIdx, req.DecIdx, req.Sfx)
+}
+
+func (op *OmniPaxos) AcceptSyncHandler(req *AcceptSyncRequest, reply *DummyReply) {
+	go func(l int, n Ballot, sfx []interface{}, syncIdx int) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle AcceptSync, l:%d, n:%+v, sfx:%+v, syncIdx:%d, state: %+v, promisedRound:%d",
+			l, n, sfx, syncIdx, op.state, op.os.PromisedRnd)
+
+		// 1. only allowed for follower prepare
+		if (op.os.PromisedRnd.compare(n) != 0) || !(op.state.role == FOLLOWER && op.state.phase == PREPARE) {
+			return
+		}
+
+		// 2. update accepted round and state
+		op.os.AcceptedRnd = n
+		op.state = State{role: FOLLOWER, phase: ACCEPT}
+
+		// 3. update the log
+		op.os.Log = op.prefix(syncIdx)
+		op.os.Log = append(op.os.Log, sfx...)
+
+		op.persist()
+
+		// 4. send accepted to leader
+		request := AcceptedRequest{
+			F:      op.me,
+			N:      n,
+			LogIdx: len(op.os.Log),
+		}
+
+		op.peers[l].Call("OmniPaxos.AcceptedHandler", &request, &DummyReply{})
+	}(req.L, req.N, req.Sfx, req.SyncIdx)
+}
+
+func (op *OmniPaxos) AcceptedHandler(req *AcceptedRequest, reply *DummyReply) {
+	go func(f int, n Ballot, logIdx int) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle Accepted, f:%d, n:%+v, logIdx:%d, decidedIdx:%d, promisedRnd:%d, state:%+v, accepted:%+v",
+			f, n, logIdx, op.os.DecidedIdx, op.os.PromisedRnd, op.state, op.accepted)
+
+		// 1. only accepted for leader,accept
+		if op.os.PromisedRnd.compare(n) != 0 || !(op.state.role == LEADER && op.state.phase == ACCEPT) {
+			return
+		}
+
+		// 2. updated accepted index
+		op.accepted[f] = logIdx
+
+		// 3. If follower has bigger log index and majority of followers have accepted it, then update decided index
+		// and send decide to all promised followers with the new index
+		if logIdx > op.os.DecidedIdx && op.hasMajorityAccepted(logIdx) {
+			// op.addToApplyChan(op.os.Log, op.os.DecidedIdx, logIdx) // To be added
+			op.os.DecidedIdx = logIdx
+			op.persist()
+
+			for _, p := range op.promises {
+				go func(f int, l int, currRnd Ballot, decIdx int) {
+					request := DecideRequest{
+						L:      l,
+						N:      currRnd,
+						DecIdx: decIdx,
+					}
+					// op.peers[f].Call("OmniPaxos.DecideHandler", &request, &DummyReply{}) // To be added
+				}(p.f, op.me, op.currentRnd, op.os.DecidedIdx)
+			}
+		}
+
+	}(req.F, req.N, req.LogIdx)
+}
+
+func (op *OmniPaxos) hasMajorityAccepted(v int) bool {
+	acceptedCount := 0
+	for _, a := range op.accepted {
+		if a >= v {
+			acceptedCount++
+		}
+	}
+	return acceptedCount >= (len(op.peers)+1)/2
+}
+
+func (op *OmniPaxos) AcceptHandler(req *AcceptRequest, reply *DummyReply) {
+	go func(l int, n Ballot, idx int, C interface{}) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle Accept, l:%d, n:%+v, C:%d, state: %+v", l, n, C, op.state)
+
+		// 1. only accept if follower,accept
+		if op.os.PromisedRnd.compare(n) != 0 || !(op.state.role == FOLLOWER && op.state.phase == ACCEPT) {
+			return
+		}
+
+		// 2. append to log and send accepted to leader
+		op.os.Log = append(op.os.Log, C)
+		op.persist()
+		go func(l int, f int, n Ballot, logIdx int, C interface{}) {
+			request := AcceptedRequest{F: f, N: n, LogIdx: logIdx}
+			op.peers[l].Call("OmniPaxos.AcceptedHandler", &request, &DummyReply{})
+		}(l, op.me, n, len(op.os.Log), C)
+
+	}(req.L, req.N, req.Idx, req.C)
 }
 
 func (op *OmniPaxos) maxPromise() *Promise {
@@ -552,7 +726,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// A4 fields
 	op.accepted = make([]int, len(peers))
-	op.promises = map[int]*Promise{}
+	op.promises = make(map[int]*Promise)
 	op.buffer = []interface{}{}
 
 	op.state = State{role: FOLLOWER, phase: PREPARE}
