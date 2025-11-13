@@ -18,7 +18,7 @@ type OmniPaxos struct {
 	me            int
 	dead          int32
 	enableLogging int32
-	// New A4 fields
+	// Your code here (2A, 2B).
 	currentRnd Ballot
 	promises   map[int]*Promise
 	maxProm    *Promise
@@ -55,23 +55,30 @@ type Promise struct {
 	log    []interface{}
 }
 
+// As each OmniPaxos peer becomes aware that successive log entries are
+// committed, the peer should send an ApplyMsg to the service (or
+// tester) on the same server, via the applyCh passed to Make(). Set
+// CommandValid to true to indicate that the ApplyMsg contains a newly
+// committed log entry.
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
 }
 
+// Ensure that all your fields for a RCP start with an Upper Case letter
 type HBRequest struct {
+	// Your code here (2A).
 	Rnd int
 }
 
 type HBReply struct {
+	// Your code here (2A).
 	Rnd    int
 	Ballot int
 	Q      bool
 }
 
-// --- A4 RPC Structs ---
 type PrepareRequest struct {
 	L      int
 	N      Ballot
@@ -125,14 +132,12 @@ type ReconnectedRequest struct {
 	F int
 }
 
-// --- End A4 Structs ---
-
 type OmniPaxosState struct {
 	L           Ballot
-	Log         []interface{} // Expanded for A4
+	Log         []interface{}
 	PromisedRnd Ballot
-	AcceptedRnd Ballot // Expanded for A4
-	DecidedIdx  int    // Expanded for A4
+	AcceptedRnd Ballot
+	DecidedIdx  int
 }
 
 func (r *OmniPaxosState) toBytes() ([]byte, error) {
@@ -186,6 +191,7 @@ type State struct {
 }
 
 func (op *OmniPaxos) HeartBeatHandler(args *HBRequest, reply *HBReply) {
+	// Your code here (2A).
 	op.mu.Lock()
 	defer func() { op.mu.Unlock() }()
 
@@ -194,6 +200,8 @@ func (op *OmniPaxos) HeartBeatHandler(args *HBRequest, reply *HBReply) {
 	reply.Rnd = args.Rnd
 }
 
+// GetState Return the current leader's ballot and whether this server
+// believes it is the leader.
 func (op *OmniPaxos) GetState() (int, bool) {
 	op.mu.Lock()
 	defer func() { op.mu.Unlock() }()
@@ -201,12 +209,15 @@ func (op *OmniPaxos) GetState() (int, bool) {
 	var ballot int
 	var isleader bool
 
+	// Your code here (2A).
 	ballot = op.b.N
 	isleader = (op.state.role == LEADER) && (op.os.L.Pid == op.me)
 	op.Debug("returning GetState, ballot:%d, isLeader:%t, state:%+v, rs:%+v", ballot, isleader, op.state, op.os)
 	return ballot, isleader
 }
 
+// Called by the tester to submit a log to your OmniPaxos server
+// Implement this as described in Figure 3
 func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
 	op.mu.Lock()
 	defer func() { op.mu.Unlock() }()
@@ -216,6 +227,7 @@ func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
 	isLeader := (op.state.role == LEADER) && (op.os.L.Pid == op.me)
 	op.Debug("started Proposal: %+v, state: %+v", command, op.state)
 
+	// Your code here (2B).
 	if op.stopped() {
 		return index, ballot, isLeader
 	}
@@ -237,6 +249,7 @@ func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
 				continue
 			}
 			wg.Add(1)
+			// TODO: figure out if go routines should be used or not
 			go func(f int, l int, n Ballot, C interface{}) {
 				defer wg.Done()
 				request := AcceptRequest{
@@ -255,8 +268,33 @@ func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
 	return index, ballot, isLeader
 }
 
+// The service using OmniPaxos (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to OmniPaxos's log. If this
+// server isn't the leader, returns false. Otherwise start the
+// agreement and return immediately. There is no guarantee that this
+// command will ever be committed to the OmniPaxos log, since the leader
+// may fail or lose an election. Even if the OmniPaxos instance has been killed,
+// this function should return gracefully.
+//
+// The first return value is the index that the command will appear at
+// if it's ever committed. The second return value is the current
+// ballot. The third return value is true if this server believes it is
+// the leader.
+
+// The tester doesn't halt goroutines created by OmniPaxos after each test,
+// but it does call the Kill() method. Your code can use killed() to
+// check whether Kill() has been called. The use of atomic avoids the
+// need for a lock.
+//
+// The issue is that long-running goroutines use memory and may chew
+// up CPU time, perhaps causing later tests to fail and generating
+// confusing debug output. Any goroutine with a long-running loop
+// should call killed() to check whether it should stop.
 func (op *OmniPaxos) Kill() {
 	atomic.StoreInt32(&op.dead, 1)
+	// Your code here, if desired.
+	// you may set a variable to false to
+	// disable logs as soon as a server is killed
 	atomic.StoreInt32(&op.enableLogging, 0)
 }
 
@@ -284,7 +322,9 @@ func (op *OmniPaxos) checkLeader() {
 	}
 
 	max := op.max(candidates)
+
 	L := op.os.L
+
 	op.Trace("inside checkLeader, round:%d, I:n:%d, I:pid:%d, max:n:%d, max:pid:%d, compare:%d, ballots:%+v", op.r, L.N, L.Pid, max.N, max.Pid, max.compare(L), op.ballots)
 
 	if max.compare(L) < 0 {
@@ -493,7 +533,7 @@ func (op *OmniPaxos) PromiseHandler(req *PromiseRequest, reply *DummyReply) {
 					N:      n,
 					DecIdx: op.os.DecidedIdx,
 				}
-				// op.peers[f].Call("OmniPaxos.DecideHandler", &request, &DummyReply{}) // To be added
+				op.peers[f].Call("OmniPaxos.DecideHandler", &request, &DummyReply{})
 			}
 		}
 
@@ -536,6 +576,42 @@ func (op *OmniPaxos) AcceptSyncHandler(req *AcceptSyncRequest, reply *DummyReply
 	}(req.L, req.N, req.Sfx, req.SyncIdx)
 }
 
+func (op *OmniPaxos) DecideHandler(req *DecideRequest, reply *DummyReply) {
+	go func(l int, n Ballot, decIdx int) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle Decide, l:%d, n:%+v, decIdx:%d, decidedIdx:%d, state:%+v, log:%+v",
+			l, n, decIdx, op.os.DecidedIdx, op.state, op.os.Log)
+
+		// TODO: figure out why it might happen
+		if decIdx <= op.os.DecidedIdx {
+			return
+		}
+		if decIdx > len(op.os.Log) {
+			return
+		}
+
+		// 1. only if it is in follower,accept then update decided index
+		if op.os.PromisedRnd.compare(n) == 0 && (op.state.role == FOLLOWER && op.state.phase == ACCEPT) {
+			op.addToApplyChan(op.os.Log, op.os.DecidedIdx, decIdx)
+			op.os.DecidedIdx = decIdx
+			op.persist()
+		}
+
+	}(req.L, req.N, req.DecIdx)
+}
+
+func (op *OmniPaxos) addToApplyChan(log []interface{}, from int, to int) {
+	for i := from; i < to; i++ {
+		op.applyCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      log[i],
+			CommandIndex: i,
+		}
+	}
+}
+
 func (op *OmniPaxos) AcceptedHandler(req *AcceptedRequest, reply *DummyReply) {
 	go func(f int, n Ballot, logIdx int) {
 		op.mu.Lock()
@@ -555,7 +631,7 @@ func (op *OmniPaxos) AcceptedHandler(req *AcceptedRequest, reply *DummyReply) {
 		// 3. If follower has bigger log index and majority of followers have accepted it, then update decided index
 		// and send decide to all promised followers with the new index
 		if logIdx > op.os.DecidedIdx && op.hasMajorityAccepted(logIdx) {
-			// op.addToApplyChan(op.os.Log, op.os.DecidedIdx, logIdx) // To be added
+			op.addToApplyChan(op.os.Log, op.os.DecidedIdx, logIdx)
 			op.os.DecidedIdx = logIdx
 			op.persist()
 
@@ -566,7 +642,7 @@ func (op *OmniPaxos) AcceptedHandler(req *AcceptedRequest, reply *DummyReply) {
 						N:      currRnd,
 						DecIdx: decIdx,
 					}
-					// op.peers[f].Call("OmniPaxos.DecideHandler", &request, &DummyReply{}) // To be added
+					op.peers[f].Call("OmniPaxos.DecideHandler", &request, &DummyReply{})
 				}(p.f, op.me, op.currentRnd, op.os.DecidedIdx)
 			}
 		}
@@ -596,6 +672,11 @@ func (op *OmniPaxos) AcceptHandler(req *AcceptRequest, reply *DummyReply) {
 			return
 		}
 
+		// if idx != len(op.rs.Log) {
+		// 	op.reconnect(l)
+		// 	return
+		// }
+
 		// 2. append to log and send accepted to leader
 		op.os.Log = append(op.os.Log, C)
 		op.persist()
@@ -605,6 +686,49 @@ func (op *OmniPaxos) AcceptHandler(req *AcceptRequest, reply *DummyReply) {
 		}(l, op.me, n, len(op.os.Log), C)
 
 	}(req.L, req.N, req.Idx, req.C)
+}
+
+func (op *OmniPaxos) ReconnectedHandler(req *ReconnectedRequest, reply *DummyReply) {
+	go func(f int) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle Reconnected, f:%d", f)
+
+		if f == op.os.L.Pid {
+			op.state = State{role: FOLLOWER, phase: RECOVER}
+		}
+
+		request := PrepareReqRequest{F: op.me}
+		op.peers[f].Call("OmniPaxos.PrepareReqHandler", &request, &DummyReply{})
+
+	}(req.F)
+}
+
+func (op *OmniPaxos) PrepareReqHandler(req *PrepareReqRequest, reply *DummyReply) {
+	go func(f int) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle PrepareReq, f:%d", f)
+
+		if op.state.role != LEADER {
+			return
+		}
+		request := PrepareRequest{
+			L:      op.me,
+			N:      op.currentRnd,
+			AccRnd: op.os.AcceptedRnd,
+			LogIdx: len(op.os.Log),
+			DecIdx: op.os.DecidedIdx,
+		}
+		op.peers[f].Call("OmniPaxos.PrepareHandler", &request, &DummyReply{})
+	}(req.F)
+}
+
+func (op *OmniPaxos) stopped() bool {
+	// TODO: fixme
+	return false
 }
 
 func (op *OmniPaxos) maxPromise() *Promise {
@@ -617,7 +741,6 @@ func (op *OmniPaxos) maxPromise() *Promise {
 	return max
 }
 
-// --- A4 Log Helpers ---
 func (op *OmniPaxos) suffix(idx int) []interface{} {
 	if idx > len(op.os.Log) {
 		return []interface{}{}
@@ -631,8 +754,6 @@ func (op *OmniPaxos) prefix(idx int) []interface{} {
 	}
 	return op.os.Log[:idx]
 }
-
-// --- End Log Helpers ---
 
 func (op *OmniPaxos) increment(ballot *Ballot, I int) {
 	ballot.N = I + 1
@@ -650,9 +771,11 @@ func (op *OmniPaxos) startTimer(delay time.Duration) {
 			op.checkLeader()
 		} else {
 			op.qc = false
+			// op.state = State{role: FOLLOWER, phase: PREPARE}
 		}
 
-		op.updateMissedHbsAndReconnect() // Stub for A4
+		// add to missed heartbeat count to keep track of reconnections
+		op.updateMissedHbsAndReconnect()
 
 		// 3. clear ballot and increase the round
 		op.ballots = make(map[Ballot]bool)
@@ -683,28 +806,91 @@ func (op *OmniPaxos) startTimer(delay time.Duration) {
 }
 
 func (op *OmniPaxos) updateMissedHbsAndReconnect() {
-	// Stub for A4
+	allMissed := map[int]bool{}
+	for peer := range op.peers {
+		if peer != op.me {
+			allMissed[peer] = true
+		}
+	}
+
+	op.Trace("missed hb counts:%+v, ballots:%+v, leader:%+v, started:%t", op.missedHbCounts, op.ballots, op.os.L)
+
+	for b := range op.ballots {
+		if b.Pid == op.me {
+			continue
+		}
+
+		isLinkReconnected := op.missedHbCounts[b.Pid] > 3 && op.me == op.os.L.Pid
+		if isLinkReconnected {
+			request := ReconnectedRequest{F: op.me}
+			op.peers[b.Pid].Call("OmniPaxos.ReconnectedHandler", &request, &DummyReply{})
+		}
+		op.missedHbCounts[b.Pid] = 0
+		delete(allMissed, b.Pid)
+	}
+
+	for p := range allMissed {
+		op.missedHbCounts[p]++
+	}
+	if len(allMissed) == len(op.peers)-1 {
+		if !op.linkDrop {
+			op.Info("link dropped")
+		}
+		op.linkDrop = true
+	} else if op.linkDrop {
+		op.Info("link recovered")
+		op.linkDrop = false
+	}
+
 	op.restart.loop++
+	// This logic is problematic. It spams PrepareReq every 2 ticks.
+	// if op.restart.loop == 2 {
+	// 	for p := range op.peers {
+	// 		request := PrepareReqRequest{F: op.me}
+	// 		op.peers[p].Call("OmniPaxos.PrepareReqHandler", &request, &DummyReply{})
+	// 	}
+	// }
+
 }
 
+// save OmniPaxos's persistent state to stable storage,
+// where it can later be retrieved after a crash and restart.
+// see paper's Figure 3 &4 for a description of what should be persistent.
 func (op *OmniPaxos) persist() {
 	buf, _ := op.os.toBytes()
 	op.persister.SaveState(buf)
 }
 
+// restore previously persisted state.
 func (op *OmniPaxos) readPersist() {
 	op.os, _ = omnipaxosStatefromBytes(op.persister.ReadState())
 }
 
 func (op *OmniPaxos) checkRecover() {
-	// Stub for A4
+	op.mu.Lock()
+	if op.os.PromisedRnd.Pid != -1 {
+		op.Trace("recovering the server")
+		op.state = State{role: FOLLOWER, phase: RECOVER}
+		for p := range op.peers {
+			go func(p int, me int) {
+				request := PrepareReqRequest{F: me}
+				op.peers[p].Call("OmniPaxos.PrepareReqHandler", &request, &DummyReply{})
+			}(p, op.me)
+
+		}
+	}
+	op.mu.Unlock()
 }
 
-func (op *OmniPaxos) stopped() bool {
-	// Stub for A4
-	return false
-}
-
+// The service or tester wants to create a OmniPaxos server. The ports
+// of all the OmniPaxos servers (including this one) are in peers[]. This
+// server's port is peers[me]. All the servers' peers[] arrays
+// have the same order. persister is a place for this server to
+// save its persistent state, and also initially holds the most
+// recent saved state, if any. applyCh is a channel on which the
+// tester or service expects OmniPaxos to send ApplyMsg messages.
+// Make() must return quickly, so it should start goroutines
+// for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *OmniPaxos {
 
@@ -717,34 +903,30 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	op.enableLogging = 0
 	op.Info("initializing Omni Paxos instance")
 
-	// A3 fields
+	// initialize variables
 	op.delay = time.Millisecond * 100
 	op.qc = true
 	op.r = 0
 	op.b = Ballot{N: 0, Pid: me}
 	op.ballots = make(map[Ballot]bool)
-
-	// A4 fields
 	op.accepted = make([]int, len(peers))
-	op.promises = make(map[int]*Promise)
+	op.promises = map[int]*Promise{}
 	op.buffer = []interface{}{}
 
 	op.state = State{role: FOLLOWER, phase: PREPARE}
-	// Initialize OmniPaxosState with A4 fields
 	op.os = OmniPaxosState{L: Ballot{N: -1, Pid: -1}, Log: []interface{}{}, PromisedRnd: Ballot{N: -1, Pid: -1}, AcceptedRnd: Ballot{N: -1, Pid: -1}, DecidedIdx: 0}
-
-	op.missedHbCounts = make(map[int]int)
+	op.missedHbCounts = map[int]int{}
 	op.restart = Restart{}
 
 	op.readPersist()
-	// op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx) // A4
+	op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx)
 
 	go op.startTimer(op.delay)
 
-	// go func() { // A4
-	// 	time.Sleep(op.delay)
-	// 	op.checkRecover()
-	// }()
+	go func() {
+		time.Sleep(op.delay)
+		op.checkRecover()
+	}()
 
 	return op
 }
