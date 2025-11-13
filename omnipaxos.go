@@ -64,6 +64,12 @@ type HBReply struct {
 	Q      bool
 }
 
+// A4 struct, needed for triggerLeader stub
+type LeaderRequest struct {
+	S int
+	N Ballot
+}
+
 type DummyReply struct{}
 
 type OmniPaxosState struct {
@@ -142,6 +148,7 @@ func (op *OmniPaxos) GetState() (int, bool) {
 
 	ballot = op.b.N
 	isleader = (op.state.role == LEADER) && (op.os.L.Pid == op.me)
+	op.Debug("returning GetState, ballot:%d, isLeader:%t, state:%+v, rs:%+v", ballot, isleader, op.state, op.os)
 	return ballot, isleader
 }
 
@@ -169,6 +176,49 @@ func (op *OmniPaxos) max(m map[Ballot]bool) Ballot {
 	return res
 }
 
+func (op *OmniPaxos) checkLeader() {
+	candidates := map[Ballot]bool{}
+	for b, q := range op.ballots {
+		if q {
+			candidates[b] = true
+		}
+	}
+
+	max := op.max(candidates)
+	L := op.os.L
+	op.Trace("inside checkLeader, round:%d, I:n:%d, I:pid:%d, max:n:%d, max:pid:%d, compare:%d, ballots:%+v", op.r, L.N, L.Pid, max.N, max.Pid, max.compare(L), op.ballots)
+
+	if max.compare(L) < 0 {
+		op.increment(&op.b, L.N)
+		op.qc = true
+		op.Trace("setting qc round:%d, max:N:%d, max:pid:%d - previous leader:N:%d, pid:%d, promisedRnd:%d, ballots:%+v, state:%+v", op.r, max.N, max.Pid, L.N, L.Pid, op.os.PromisedRnd, op.ballots, op.state)
+	} else if max.compare(L) > 0 {
+		op.Info("setting leader for round:%d, max:N:%d, max:pid:%d - previous leader:N:%d, pid:%d, promisedRnd:%d, ballots:%+v, state:%+v", op.r, max.N, max.Pid, L.N, L.Pid, op.os.PromisedRnd, op.ballots, op.state)
+		op.os.L = max
+		op.persist()
+		op.Debug("updated leader L:%+v", op.os.L)
+		op.triggerLeader(max.Pid, max)
+	}
+}
+
+func (op *OmniPaxos) triggerLeader(s int, n Ballot) {
+	// A3 logic: Just update state if we are the new leader
+	if !(s == op.me && n.compare(op.os.PromisedRnd) > 0) {
+		op.state.role = FOLLOWER
+		return
+	}
+	op.Info("making itself as leader")
+
+	op.qc = true
+	// In A4, this will become (LEADER, PREPARE)
+	op.state = State{role: LEADER, phase: ""}
+	op.os.PromisedRnd = n
+
+	// A4 logic will be added here
+
+	op.persist()
+}
+
 func (op *OmniPaxos) increment(ballot *Ballot, I int) {
 	ballot.N = I + 1
 }
@@ -182,12 +232,12 @@ func (op *OmniPaxos) startTimer(delay time.Duration) {
 
 		// 2. if have majority, then check leader else qc is false
 		if len(op.ballots) >= (len(op.peers)+1)/2 {
-			// op.checkLeader() // Will be added in next commit
+			op.checkLeader() // Now implemented
 		} else {
 			op.qc = false
 		}
 
-		// op.updateMissedHbsAndReconnect() // Will be added in A4
+		op.updateMissedHbsAndReconnect() // Stub for A4
 
 		// 3. clear ballot and increase the round
 		op.ballots = make(map[Ballot]bool)
@@ -231,6 +281,10 @@ func (op *OmniPaxos) readPersist() {
 	op.os, _ = omnipaxosStatefromBytes(op.persister.ReadState())
 }
 
+func (op *OmniPaxos) checkRecover() {
+	// Stub for A4
+}
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *OmniPaxos {
 
@@ -252,13 +306,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	op.state = State{role: FOLLOWER, phase: PREPARE}
 	op.os = OmniPaxosState{L: Ballot{N: -1, Pid: -1}, Log: []interface{}{}, PromisedRnd: Ballot{N: -1, Pid: -1}, AcceptedRnd: Ballot{N: -1, Pid: -1}, DecidedIdx: 0}
 
-	// Init A4 fields
 	op.missedHbCounts = make(map[int]int)
 	op.restart = Restart{}
 
 	op.readPersist()
+	// op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx) // A4
 
 	go op.startTimer(op.delay)
+
+	// go func() { // A4
+	// 	time.Sleep(op.delay)
+	// 	op.checkRecover()
+	// }()
 
 	return op
 }
