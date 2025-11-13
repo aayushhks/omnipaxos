@@ -208,7 +208,7 @@ func (op *OmniPaxos) GetState() (int, bool) {
 }
 
 func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
-	// To be implemented in A4
+	// To be implemented
 	return -1, -1, false
 }
 
@@ -258,7 +258,6 @@ func (op *OmniPaxos) checkLeader() {
 }
 
 func (op *OmniPaxos) triggerLeader(s int, n Ballot) {
-	// A4 logic will be added here
 	if !(s == op.me && n.compare(op.os.PromisedRnd) > 0) {
 		op.state.role = FOLLOWER
 		return
@@ -273,11 +272,175 @@ func (op *OmniPaxos) triggerLeader(s int, n Ballot) {
 
 	// 2.
 	op.qc = true
-	op.state = State{role: LEADER, phase: PREPARE} // A4 state
+	op.state = State{role: LEADER, phase: PREPARE}
 	op.currentRnd = n
 	op.os.PromisedRnd = n
 
+	// 3. add own promise
+	promise := Promise{f: op.me, accRnd: op.os.AcceptedRnd, logIdx: len(op.os.Log),
+		decIdx: op.os.DecidedIdx, log: op.suffix(op.os.DecidedIdx)}
+	op.promises[op.me] = &promise
+
+	// 4. send prepare to all peers
+	for peer := range op.peers {
+		if peer != op.me {
+			go func(peer int, pid int, currentRnd Ballot, acceptedRnd Ballot, logSize int, decidedIdx int) {
+				request := PrepareRequest{
+					L:      pid,
+					N:      currentRnd,
+					AccRnd: acceptedRnd,
+					LogIdx: logSize,
+					DecIdx: decidedIdx,
+				}
+				op.peers[peer].Call("OmniPaxos.PrepareHandler", &request, &DummyReply{})
+			}(peer, op.me, op.currentRnd, op.os.AcceptedRnd, len(op.os.Log), op.os.DecidedIdx)
+		}
+	}
+
 	op.persist()
+}
+
+func (op *OmniPaxos) PrepareHandler(req *PrepareRequest, reply *DummyReply) {
+	go func(l int, n Ballot, accRnd Ballot, logIdx int, decIdx int) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle prepare, l:%d, n:%+v, accRnd:%d, logIdx:%d, decIdx:%d, promRnd:%+v",
+			l, n, accRnd, logIdx, decIdx, op.os.PromisedRnd)
+
+		// 1.
+		if op.os.PromisedRnd.compare(n) > 0 {
+			return
+		}
+
+		// 2. update state
+		op.state = State{
+			role:  FOLLOWER,
+			phase: PREPARE,
+		}
+
+		// 3. updated promised round
+		op.os.PromisedRnd = n
+		op.persist()
+
+		// 4. find suffix
+		var sfx []interface{}
+		if op.os.AcceptedRnd.compare(accRnd) > 0 {
+			sfx = op.suffix(decIdx)
+		} else if op.os.AcceptedRnd.compare(accRnd) == 0 {
+			sfx = op.suffix(logIdx)
+		} else {
+			sfx = []interface{}{}
+		}
+
+		// 5. send promise to leader
+		request := PromiseRequest{
+			F:      op.me,
+			N:      n,
+			AccRnd: op.os.AcceptedRnd,
+			LogIdx: len(op.os.Log),
+			DecIdx: op.os.DecidedIdx,
+			Sfx:    sfx,
+		}
+		op.peers[l].Call("OmniPaxos.PromiseHandler", &request, &DummyReply{})
+	}(req.L, req.N, req.AccRnd, req.LogIdx, req.DecIdx)
+}
+
+func (op *OmniPaxos) PromiseHandler(req *PromiseRequest, reply *DummyReply) {
+	go func(f int, n Ballot, accRnd Ballot, logIdx int, decIdx int, sfx []interface{}) {
+		op.mu.Lock()
+		defer func() { op.mu.Unlock() }()
+
+		op.Debug("Handle Promise, f:%d, n:%+v, accRnd:%d, logIdx:%d, decIdx:%d, sfx:%+v",
+			f, n, accRnd, logIdx, decIdx, sfx)
+
+		// 1.
+		if n.compare(op.currentRnd) != 0 {
+			return
+		}
+
+		// 2. update promise
+		promise := Promise{
+			f:      f,
+			accRnd: accRnd,
+			logIdx: logIdx,
+			decIdx: decIdx,
+			log:    sfx,
+		}
+		op.promises[f] = &promise
+
+		// return if not a leader
+		if op.state.role != LEADER {
+			return
+		}
+
+		if op.state.phase == PREPARE {
+
+			// P1. return if there are no majority yet
+			if len(op.promises) < (len(op.peers)+1)/2 {
+				return
+			}
+
+			// P2. find the maximum promise (with accRnd and logIdx)
+			op.maxProm = op.maxPromise()
+
+			// P3. remove extra logs if the leaders accepted round is not same as maximum promises
+			if op.maxProm.accRnd != op.os.AcceptedRnd {
+				op.os.Log = op.prefix(op.os.DecidedIdx)
+			}
+
+			// P4. append max promise's suffix to the log
+			op.os.Log = append(op.os.Log, op.maxProm.log...)
+
+			// P5. append buffer to the log unless it is stopped
+			if op.stopped() {
+				op.buffer = []interface{}{}
+			} else {
+				op.os.Log = append(op.os.Log, op.buffer...)
+			}
+
+			// P6. set accpeted round to current round, updated accepted for leader and set state
+			op.os.AcceptedRnd = op.currentRnd
+			op.accepted[op.me] = len(op.os.Log)
+			op.state = State{role: LEADER, phase: ACCEPT}
+
+			// P5. send AcceptSync to each promised follower
+			for _, p := range op.promises {
+				var syncIdx int
+				if p.accRnd == op.maxProm.accRnd {
+					syncIdx = p.logIdx
+				} else {
+					syncIdx = p.decIdx
+				}
+
+				go func(l int, n Ballot, sfx []interface{}, syncIdx int, f int) {
+					request := AcceptSyncRequest{
+						L:       l,
+						N:       n,
+						Sfx:     sfx,
+						SyncIdx: syncIdx,
+					}
+					// op.peers[f].Call("OmniPaxos.AcceptSyncHandler", &request, &DummyReply{}) // To be added
+				}(op.me, n, op.suffix(syncIdx), syncIdx, p.f)
+			}
+
+		} else if op.state.phase == ACCEPT {
+			// Logic to be added
+		}
+
+		op.persist()
+
+	}(req.F, req.N, req.AccRnd, req.LogIdx, req.DecIdx, req.Sfx)
+}
+
+func (op *OmniPaxos) maxPromise() *Promise {
+	max := &Promise{accRnd: Ballot{N: -1, Pid: -1}, log: []interface{}{}}
+	for _, p := range op.promises {
+		if (p.accRnd.compare(max.accRnd) > 0) || (p.accRnd == max.accRnd && p.logIdx > max.logIdx) {
+			max = p
+		}
+	}
+	return max
 }
 
 // --- A4 Log Helpers ---
@@ -400,11 +563,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	op.restart = Restart{}
 
 	op.readPersist()
-	// op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx)
+	// op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx) // A4
 
 	go op.startTimer(op.delay)
 
-	// go func() {
+	// go func() { // A4
 	// 	time.Sleep(op.delay)
 	// 	op.checkRecover()
 	// }()
