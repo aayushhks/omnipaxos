@@ -18,6 +18,12 @@ type OmniPaxos struct {
 	me            int
 	dead          int32
 	enableLogging int32
+	// New A4 fields
+	currentRnd Ballot
+	promises   map[int]*Promise
+	maxProm    *Promise
+	accepted   []int
+	buffer     []interface{}
 
 	os OmniPaxosState
 
@@ -31,9 +37,10 @@ type OmniPaxos struct {
 
 	applyCh chan ApplyMsg
 
-	// Fields added for A4 later
+	linkDrop       bool
 	missedHbCounts map[int]int
-	restart        Restart
+
+	restart Restart
 }
 
 type Restart struct {
@@ -64,20 +71,68 @@ type HBReply struct {
 	Q      bool
 }
 
-// A4 struct, needed for triggerLeader stub
-type LeaderRequest struct {
-	S int
-	N Ballot
+// --- A4 RPC Structs ---
+type PrepareRequest struct {
+	L      int
+	N      Ballot
+	AccRnd Ballot
+	LogIdx int
+	DecIdx int
 }
 
 type DummyReply struct{}
 
+type PromiseRequest struct {
+	F      int
+	N      Ballot
+	AccRnd Ballot
+	LogIdx int
+	DecIdx int
+	Sfx    []interface{}
+}
+
+type AcceptSyncRequest struct {
+	L       int
+	N       Ballot
+	Sfx     []interface{}
+	SyncIdx int
+}
+
+type DecideRequest struct {
+	L      int
+	N      Ballot
+	DecIdx int
+}
+
+type AcceptedRequest struct {
+	F      int
+	N      Ballot
+	LogIdx int
+}
+
+type AcceptRequest struct {
+	L   int
+	N   Ballot
+	Idx int
+	C   interface{}
+}
+
+type PrepareReqRequest struct {
+	F int
+}
+
+type ReconnectedRequest struct {
+	F int
+}
+
+// --- End A4 Structs ---
+
 type OmniPaxosState struct {
 	L           Ballot
-	Log         []interface{}
+	Log         []interface{} // Expanded for A4
 	PromisedRnd Ballot
-	AcceptedRnd Ballot
-	DecidedIdx  int
+	AcceptedRnd Ballot // Expanded for A4
+	DecidedIdx  int    // Expanded for A4
 }
 
 func (r *OmniPaxosState) toBytes() ([]byte, error) {
@@ -153,6 +208,7 @@ func (op *OmniPaxos) GetState() (int, bool) {
 }
 
 func (op *OmniPaxos) Proposal(command interface{}) (int, int, bool) {
+	// To be implemented in A4
 	return -1, -1, false
 }
 
@@ -202,22 +258,44 @@ func (op *OmniPaxos) checkLeader() {
 }
 
 func (op *OmniPaxos) triggerLeader(s int, n Ballot) {
-	// A3 logic: Just update state if we are the new leader
+	// A4 logic will be added here
 	if !(s == op.me && n.compare(op.os.PromisedRnd) > 0) {
 		op.state.role = FOLLOWER
 		return
 	}
 	op.Info("making itself as leader")
 
-	op.qc = true
-	// In A4, this will become (LEADER, PREPARE)
-	op.state = State{role: LEADER, phase: ""}
-	op.os.PromisedRnd = n
+	// 1. reset state
+	op.accepted = make([]int, len(op.accepted))
+	op.promises = map[int]*Promise{}
+	op.maxProm = &Promise{}
+	op.buffer = []interface{}{}
 
-	// A4 logic will be added here
+	// 2.
+	op.qc = true
+	op.state = State{role: LEADER, phase: PREPARE} // A4 state
+	op.currentRnd = n
+	op.os.PromisedRnd = n
 
 	op.persist()
 }
+
+// --- A4 Log Helpers ---
+func (op *OmniPaxos) suffix(idx int) []interface{} {
+	if idx > len(op.os.Log) {
+		return []interface{}{}
+	}
+	return op.os.Log[idx:]
+}
+
+func (op *OmniPaxos) prefix(idx int) []interface{} {
+	if idx > len(op.os.Log) {
+		idx = len(op.os.Log)
+	}
+	return op.os.Log[:idx]
+}
+
+// --- End Log Helpers ---
 
 func (op *OmniPaxos) increment(ballot *Ballot, I int) {
 	ballot.N = I + 1
@@ -232,7 +310,7 @@ func (op *OmniPaxos) startTimer(delay time.Duration) {
 
 		// 2. if have majority, then check leader else qc is false
 		if len(op.ballots) >= (len(op.peers)+1)/2 {
-			op.checkLeader() // Now implemented
+			op.checkLeader()
 		} else {
 			op.qc = false
 		}
@@ -285,6 +363,11 @@ func (op *OmniPaxos) checkRecover() {
 	// Stub for A4
 }
 
+func (op *OmniPaxos) stopped() bool {
+	// Stub for A4
+	return false
+}
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *OmniPaxos {
 
@@ -297,24 +380,31 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	op.enableLogging = 0
 	op.Info("initializing Omni Paxos instance")
 
+	// A3 fields
 	op.delay = time.Millisecond * 100
 	op.qc = true
 	op.r = 0
 	op.b = Ballot{N: 0, Pid: me}
 	op.ballots = make(map[Ballot]bool)
 
+	// A4 fields
+	op.accepted = make([]int, len(peers))
+	op.promises = map[int]*Promise{}
+	op.buffer = []interface{}{}
+
 	op.state = State{role: FOLLOWER, phase: PREPARE}
+	// Initialize OmniPaxosState with A4 fields
 	op.os = OmniPaxosState{L: Ballot{N: -1, Pid: -1}, Log: []interface{}{}, PromisedRnd: Ballot{N: -1, Pid: -1}, AcceptedRnd: Ballot{N: -1, Pid: -1}, DecidedIdx: 0}
 
 	op.missedHbCounts = make(map[int]int)
 	op.restart = Restart{}
 
 	op.readPersist()
-	// op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx) // A4
+	// op.addToApplyChan(op.os.Log, 0, op.os.DecidedIdx)
 
 	go op.startTimer(op.delay)
 
-	// go func() { // A4
+	// go func() {
 	// 	time.Sleep(op.delay)
 	// 	op.checkRecover()
 	// }()
