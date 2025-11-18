@@ -236,12 +236,12 @@ ok  	a5-omnipaxos	94.833s
 go test -run 4  10.32s user 5.81s system 8% cpu 3:11.40 total
 ```
 
-The "ok OmniPaxos 94.833s" means that Go measured the time taken for the A4 tests to be 94.833 seconds of real (wall-clock) time. The "10.32s user" means that the code consumed 10.32s seconds of CPU time, or time spent actually executing instructions (rather than waiting or sleeping). If your solution uses an unreasonable amount of time, look for time spent sleeping or waiting for RPC timeouts, loops that run without sleeping or waiting for conditions or channel messages, or large numbers of RPCs sent.
+The "ok OmniPaxos 94.833s" means that Go measured the time taken for tests to be 94.833 seconds of real (wall-clock) time. The "10.32s user" means that the code consumed 10.32s seconds of CPU time, or time spent actually executing instructions (rather than waiting or sleeping). If your solution uses an unreasonable amount of time, look for time spent sleeping or waiting for RPC timeouts, loops that run without sleeping or waiting for conditions or channel messages, or large numbers of RPCs sent.
 
 #### A few other findings:
 
 - Run git pull to get the latest lab software.
-- Failures may be caused by problems in your code for A3 or log replication. Your code should pass all the A3 and A4 tests. It might be possible that your changes for 4A break some tests for A3. So keep testing both parts as you work on this assignment.
+- Failures may be caused by problems in your code for log replication. Your code should pass all the A3 and A4 tests. It might be possible that your changes for 4A break some tests for A3. So keep testing both parts as you work on this assignment.
 
 It is a good idea to run the tests multiple times before submitting and check that each run prints `PASS`.
 
